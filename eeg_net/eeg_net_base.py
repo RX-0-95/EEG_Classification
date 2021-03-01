@@ -1,5 +1,5 @@
 from os import scandir
-import numpy 
+import numpy as np
 import torch
 from torch._C import MobileOptimizerType, device 
 import torch.nn as nn
@@ -8,23 +8,13 @@ from torch.utils.data import Dataset, DataLoader,TensorDataset, random_split
 from torchvision import transforms, utils 
 import torch.optim as optim 
 import time 
-
+from livelossplot import PlotLosses 
+import matplotlib.pyplot as plt 
 from eeg_net.utils import *
 '''
 Process Data 
 TODO: Fourier transfer magnitude and phase  
 '''
-import numpy as np
-X_test = np.load("data/X_test.npy")
-y_test = np.load("data/y_test.npy")
-person_train_valid = np.load("data/person_train_valid.npy")
-X_train_valid = np.load("data/X_train_valid.npy")
-y_train_valid = np.load("data/y_train_valid.npy")
-person_test = np.load("data/person_test.npy")
-
-
-
-
 
 
 class EEGDataset(Dataset):
@@ -83,9 +73,6 @@ class ShallowConv(nn.Module):
             _device = torch.device(device)
         self.device = _device 
         return _device 
-
-
-
 
 def eeg_train_val_loader(_data_dir, _label_dir,**kwargs):
     """ 
@@ -150,14 +137,23 @@ def eeg_train_val_loader(_data_dir, _label_dir,**kwargs):
     }
     return dataloaders 
 
-
 def train(model,options,criterion,
     data_dir,label_dir,
-    device=None,preload_gpu=False):
+    device=None,preload_gpu=False,
+    verbose=True,plot_graph=True):
     
+
+    # log record loss 
+    logs = {
+        'train_loss': [],
+        'train_acc': [],
+        'val_loss': [],
+        'val_acc': [] 
+    } 
+
     model.train() 
     train_device = get_device(device)
-
+    
     # Unpack options 
     _train_val_split_ratio = options.pop('train_val_split_ratio',0.8)
     _train_batch_size = options.pop('train_batch_size',32)
@@ -196,9 +192,9 @@ def train(model,options,criterion,
         factor=_scheduler_factor,
         patience= _scheduler_patience,
         verbose=True,
-        threshold=1e-3 
+        threshold=1e-2 
         )
-    
+
     print('Start training...')
     print('Epoch\tTrain Loss\tTrain Acc\tTest Loss\tTest_Acc\t')
     
@@ -234,33 +230,47 @@ def train(model,options,criterion,
             epoch_metric.append(get_pred_acc(yhat_detacted,y_detacted))
             iter_ct +=1 
             #print(iter_ct)
-            if iter_ct%10 ==10-1:
-                print('--Iter %d\t%4.6f' %(
-                    iter_ct,
-                    loss
-                ))
+            if verbose: 
+                if iter_ct%50 ==50-1:
+                    print('--Iter %d\t%4.6f' %(
+                        iter_ct,
+                        loss
+                    ))
 
 
         avg_epoch_loss = sum(epoch_loss)/len(epoch_loss)
         avg_epoch_metric = sum(epoch_metric)/len(epoch_metric)
-        avg_test_loss, avg_test_metric = test_net(model,val_loader,
+        avg_val_loss, avg_val_metric = test_net(model,val_loader,
                                                 criterion,train_device)
-        scheduler.step(avg_epoch_loss) 
-    
+        scheduler.step(avg_val_metric) 
+
+  
+        ## log the result 
+        logs['train_loss'].append(avg_epoch_loss) 
+        logs['train_acc'].append(avg_epoch_metric)
+        logs['val_loss'].append(avg_val_loss)
+        logs['val_acc'].append(avg_val_metric)
+
         ## Print result 
-        print('%d\t%4.6f\t%4.6f\t%4.6f\t%4.6f\t' % (
-            i, 
-            avg_epoch_loss, 
-            avg_epoch_metric, 
-            avg_test_loss, 
-            avg_test_metric
-            )
-        )
+        if verbose:
+            print('%d\t%4.6f\t%4.6f\t%4.6f\t%4.6f\t' % (
+                i, 
+                avg_epoch_loss, 
+                avg_epoch_metric, 
+                avg_val_loss, 
+                avg_val_metric
+                ))
+
+    if plot_graph:
+        plot_logs(logs)        
+
+    return logs, model 
 
 def get_pred_acc(output,gt):
     _,pred = output.max(1)
     correct_pred = pred.eq(gt).sum().item() 
     return correct_pred/len(gt)
+
 def test_net(model,test_loader,criterion,device):
     model.eval() 
 
@@ -286,3 +296,18 @@ def test_net(model,test_loader,criterion,device):
     avg_loss = sum(test_loss) / len(test_loss)
     avg_metric = sum(test_metrics) / len(test_metrics)
     return avg_loss, avg_metric
+
+def plot_logs(logs):
+    fig,(ax1,ax2) = plt.subplots(1,2) 
+    ax1.plot(logs['train_loss'],label='Train')
+    ax1.plot(logs['val_loss'],label = 'Validation')
+    ax1.set_title('Loss')
+    ax1.set_xlabel('epoch')
+    ax1.set_ylabel('loss')
+    ax2.plot(logs['train_acc'],label = 'Train')
+    ax2.plot(logs['val_acc'],label = 'Validation')
+    ax2.set_title('Accuracy')
+    ax2.set_xlabel('epoch')
+    ax2.set_ylabel('acc')
+    fig.legend() 
+    plt.show() 

@@ -1,7 +1,6 @@
-- [ ] wrapper of all net 
-- [ ] Native implementation of fcn 
-- [ ] Native implementation of cnn 
-- [ ] Recurrent neural networ 
+- [x] wrapper of all net 
+- [x] Native implementation of cnn 
+- [ ] Recurrent neural network 
 - [ ] varaitonal autoencoders 
 - [ ] Generative adversarial network 
 - [ ] Deep reinforcement learning 

@@ -6,3 +6,5 @@ def get_device(device=None):
     else:
         _device = torch.device(device)
     return _device 
+
+
