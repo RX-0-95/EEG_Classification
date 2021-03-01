@@ -1,7 +1,7 @@
 from os import scandir
 import numpy as np
 import torch
-from torch._C import MobileOptimizerType, TreeView, device 
+#from torch._C import MobileOptimizerType, TreeView, device 
 import torch.nn as nn
 from torch.types import Device 
 from torch.utils.data import Dataset, DataLoader,TensorDataset, random_split 
@@ -18,7 +18,7 @@ TODO: Fourier transfer magnitude and phase
 
 def activation_func(activation):
     return nn.ModuleDict([
-        ['relu',nn.ReLU(inplace=TreeView)],
+        ['relu',nn.ReLU(inplace=True)],
         ['leaky_relu',nn.LeakyReLU(negative_slope=0.01, inplace=True)],
         ['selu',nn.SELU(inplace= True)],
         ['none', nn.Identity()]

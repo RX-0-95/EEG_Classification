@@ -45,3 +45,21 @@
     * out: (-1,1)
 
 ## ResConvNet 
+
+1. Conv1d (32,(1,25)): Process time interval 
+    * input: (B,1,22,1000)
+    * output: (B,32,22,976)
+
+2. Conv1d (32,64,(1,25)): Process time interval 
+    * input: (B,32,22,976)
+    * output: (B,64,22,952)
+
+3. RELU
+
+4. (*) Max pool(1d ) (1,22,stride = 10)   // may need futuer incrase stride or 
+    * input(B,64,22,952)                   //incrase the kernel size in conv2d below
+    * output (B,64,22,94)
+
+5. Conv2d: (64,64,(3,3))
+    * input: (B,64,22,94)
+    * out: 
