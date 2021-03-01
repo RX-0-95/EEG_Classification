@@ -8,7 +8,7 @@
     * input: (B,1,22,1000)
     * output: (B,40,22,976)
 
-2. Dense: Timer inverval 
+2. Dense: Time inverval 
     * input: (B,40,22,976)
     * reshape (B,976,22,40)
     * flatten (-1,976,880)
@@ -43,3 +43,5 @@
 8. softmax:
     * in: (-1,4)
     * out: (-1,1)
+
+## ResConvNet 
