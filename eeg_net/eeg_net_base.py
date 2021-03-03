@@ -18,7 +18,7 @@ TODO: Fourier transfer magnitude and phase
 
 def activation_func(activation):
     return nn.ModuleDict([
-        ['relu',nn.ReLU(inplace=True)],
+        ['relu',nn.ReLU(inplace=False)],
         ['leaky_relu',nn.LeakyReLU(negative_slope=0.01, inplace=True)],
         ['selu',nn.SELU(inplace= True)],
         ['none', nn.Identity()]
@@ -29,20 +29,33 @@ class EEGDataset(Dataset):
     def __init__(self, subset, transform=None):        
         self.transform = transform
         self.subset = subset 
-
-
-        
+    
     def __getitem__(self, index):
         x, y = self.subset[index]
         if self.transform:
-          pass 
-            # x = self.transform(x)
-            # y = self.transform(y)
+            if self.transform == 'shift_positive':
+               x = self.shift_positive(x) 
+            elif self.transform =='square':
+                x = self.square(x)
+            elif self.transform =='fft':
+                x = self.fft(x)
+           
         return x, y
         
     def __len__(self):
         return len(self.subset)
 
+    def shift_positive(self,x):
+        min_value = torch.min(x)
+        rt = x + min_value 
+        return rt 
+    def square(self,x): 
+        rt = torch.square(x)
+        return rt 
+    
+    def fft(self,x):
+        return x 
+    
 
 class ShallowConv(nn.Module):
     '''
@@ -109,6 +122,7 @@ def eeg_train_val_loader(_data_dir, _label_dir,**kwargs):
     train_batch_size = kwargs.pop('train_batch_size',32)
     val_batch_size = kwargs.pop('val_batch_size',8)
     device = get_device(kwargs.pop('device',None)) 
+    transform = kwargs.pop('transform',None)
     
     # Throw an error if extra keyword 
     if len(kwargs) >0:
@@ -130,10 +144,10 @@ def eeg_train_val_loader(_data_dir, _label_dir,**kwargs):
     subset_train, subset_val = random_split(init_dataset, lengths) 
 
     train_data = EEGDataset(
-    subset_train, transform=None)
+    subset_train, transform=transform)
 
     val_data = EEGDataset(
-        subset_val, transform=None)
+        subset_val, transform=transform)
     #print(len(val_data))
     #print(len(train_data))
     dataloaders = {
@@ -169,6 +183,7 @@ def train(model,options,criterion,
     _weight_decay = options.pop('weight_decay',0)
     _scheduler_factor = options.pop('scheduler_factor',0.8)
     _scheduler_patience = options.pop('scheduler_patience',50)
+    _transform = options.pop('transform',None)
 
     epoch_num = options.pop('epoch_num',250)
 
@@ -182,7 +197,8 @@ def train(model,options,criterion,
         device = train_device if preload_gpu else 'cpu',
         split_ratio = _train_val_split_ratio,
         train_batch_size =_train_batch_size,
-        val_batch_size = _val_batch_size) 
+        val_batch_size = _val_batch_size,
+        transform = _transform) 
 
     train_loader = data_loaders['train']
     val_loader = data_loaders['val']
