@@ -103,3 +103,12 @@
 #### EEGResNet Encoder 
 * Automatic adujust the size of the 
 
+
+
+## CNN 
+
+### Target 
+1. Adjsut 1d conv size, input channel, output channel, no pad 
+2. Adjust maxpool1d size 
+3. Adjust y axis 
+

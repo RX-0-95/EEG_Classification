@@ -21,6 +21,7 @@ def activation_func(activation):
         ['relu',nn.ReLU(inplace=False)],
         ['leaky_relu',nn.LeakyReLU(negative_slope=0.01, inplace=True)],
         ['selu',nn.SELU(inplace= True)],
+        ['elu',nn.ELU(inplace=False)],
         ['none', nn.Identity()]
     ])[activation]
 
@@ -47,7 +48,7 @@ class EEGDataset(Dataset):
 
     def shift_positive(self,x):
         min_value = torch.min(x)
-        rt = x + min_value 
+        rt = x - min_value 
         return rt 
     def square(self,x): 
         rt = torch.square(x)
@@ -62,9 +63,12 @@ class ShallowConv(nn.Module):
     ShallowConv: 
     ShallowConv is given by TA as the baseline of this project 
     '''
-    def __init__(self,in_channels, classes,device=None):
+    def __init__(self,in_channels, classes,device=None,*args,**kwargs):
         super().__init__()
+        # Unpack the kwargs 
+        _activation = kwargs.pop('activation','none')
         self.device = self.set_device(device) 
+        self.activation = activation_func(_activation)
         self.conv1 = nn.Conv2d(in_channels, 40,(1,25),stride=1)
         self.fc1 = nn.Linear(880,40)
         self.avgpool = nn.AvgPool1d(75, stride=15)
@@ -74,9 +78,11 @@ class ShallowConv(nn.Module):
     def forward(self,x):
         x = x.view(-1,1,22,1000)
         x = self.conv1(x)
+        #x = self.activation(x)
         x = x.permute(0,3,1,2)
         x = x.view(-1,976,880)
         x = self.fc1(x)
+        x = self.activation(x)
         x = torch.square(x)
         x = x.permute(0,2,1)
         x = self.avgpool(x)

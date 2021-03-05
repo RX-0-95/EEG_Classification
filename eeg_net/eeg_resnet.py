@@ -1,6 +1,7 @@
 from os import scandir
 import numpy as np
 import torch
+#from torch._C import TreeView
 #from torch._C import MobileOptimizerType, device, strided 
 import torch.nn as nn
 from torch.nn.modules import activation, conv
@@ -33,6 +34,8 @@ class AvgPoolAuto(nn.AvgPool2d):
     pass 
 
 conv3x3 = partial(Conv2dAuto,kernel_size=3, bias=False)
+conv1x17 = partial(Conv2dAuto,kernel_size=(1,17),bias = False)
+conv1x9= partial(Conv2dAuto,kernel_size=(1,9),bias = False)
 
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels, activation = 'relu'):
@@ -130,7 +133,7 @@ class ResNetLayer(nn.Module):
     def __init__(self,in_channels,out_channels,block=ResNetBasicBlock,n=1,*args,**kwargs):
         super().__init__()
         # Downwsampling directly by convolutional layer that have stride of 2 
-        downsampling = 2 if in_channels != out_channels else 1 
+        downsampling = (1,2) if in_channels != out_channels else 1 
         self.blocks = nn.Sequential(
             block(in_channels,out_channels,*args,**kwargs,downsampling=downsampling),
             *[block(out_channels*block.expansion,out_channels,downsampling=1,
@@ -142,109 +145,106 @@ class ResNetLayer(nn.Module):
 
 class ResNetEncoder(nn.Module):
     def __init__(self,in_channels=3, block_sizes=[64,128,256,512],deepths=[2,2,2,2],
-        activaion='relu',block=ResNetBasicBlock,*args,**kwargs):
+        activation='relu',block=ResNetBasicBlock,*args,**kwargs):
         super().__init__()
         self.blocks_sizes = block_sizes
         self.gate = nn.Sequential(
             nn.Conv2d(in_channels,self.blocks_sizes[0],
                     kernel_size=7,stride=2,padding=3,bias=False),
-            nn.BatchNorm2d(self.block_szies[0]),
+            nn.BatchNorm2d(self.blocks_sizes[0]),
             activation_func(activation),
             nn.MaxPool2d(kernel_size=3,stride=2,padding=1)
         )
         self.in_out_block_sizes = list(zip(block_sizes,block_sizes[1:]))
+        self.blocks = nn.ModuleList([
+            ResNetLayer(block_sizes[0],block_sizes[0],n=deepths[0],
+                activation=activation,block=block,*args,**kwargs),
+            *[ResNetLayer(in_channels*block.expansion,
+                out_channels,n=n,activation=activation,
+                block=block,*args,**kwargs)
+                for (in_channels,out_channels),n in zip(self.in_out_block_sizes,deepths[1:])]
+        ])
+    def forward(self,x):
+        x = self.gate(x)
+        for block in self.blocks:
+            x = block(x)
+        return x 
 
-class EEGResNetV2(nn.Module):
-    def __init__(self,in_channels, classes):
+class ResNetDecoder(nn.Module):
+    def __init__(self, in_features, n_classes):
         super().__init__()
-        """
-        1. Conv1d (32,(1,25)): Process time interval 
-        * input: (B,1,22,1000)
-        * output: (B,32,22,976)
-        """
-        self.conv1 = nn.Conv2d(in_channels,32,(1,25),stride=1)
-        """
-        2. Conv1d (32,64,(1,25)): Process time interval 
-        * input: (B,32,22,976)
-        * output: (B,64,22,952)
-        """
-        self.conv2 = nn.Conv2d(32,64,(1,25),stride=1)
-
-        """
-        ReLU 
-        """
-        self.Relu = activation_func('leaky_relu')
-
-        """
-        4. (*) Max pool(1d ) (1,22,stride = 10)   // may need futuer incrase stride or 
-        * input(B,64,22,952)                   //incrase the kernel size in conv2d below
-        * output (B,64,22,94)
-        """
-        self.maxpool1 = nn.MaxPool2d((1,22),stride=(1,10))
-        self.avgpool = nn.AvgPool2d((1,22), stride=(1,10))
-        """
-        5. Residual block1  
-        * input(B,64,22,94)                   
-        * output (B,64,22,94)
-        """
-        self.resudual_block1 = ResNetBasicBlock(in_channels=32,out_channels=64,activation='none')
-        self.resudual_block2 = ResNetBasicBlock(in_channels=64,out_channels=128,activation='none')
-        self.resudual_block3 = ResNetBasicBlock(in_channels=128,out_channels=128,activation='none')
-        self.resudual_block4 = ResNetBasicBlock(in_channels=128,out_channels=64,activation='none')
-        """
-        6. Fullconnect (in:1408, out:32)
-        * input(B,64,22,94)
-            * reform (B,94,64,22)
-            * reform (B,94,64*22)
-        * out(B,94,32)
-        * square 
-        * log 
-        """
-        self.fc1 = nn.Linear(1408,32)
-        
-       
-        """
-        8. fc2 (in: 1048*32, out: 4)
-        * input: (B,94,32) 
-        * reshape: (B,94*32)
-        * fc: out(B,4)
-        """       
-        self.fc2 = nn.Linear(96*32,4) 
-        self.softmax = nn.Softmax(dim=1)
+        #self.avg = nn.AdaptiveAvgPool2d((1,1))
+        self.avgpool = nn.AvgPool2d((1,6),stride=4)
+        self.maxpool = nn.MaxPool2d((1,6),stride=4)
+        #self.maxpool = nn.MaxPool2d((1,6),stride=4)
+        self.decoder = nn.Linear(in_features, n_classes)
+    def forward(self,x):
+        x = self.avgpool(x)
+        #x = self.maxpool(x)
+        x = x.view(x.size(0),-1)
+        #print(x.shape)
+        x = self.decoder(x)
     
+        return x 
+
+class EEGResNetBasicBlock(ResNetResidualBlock):
+    '''
+    2 layers of 1x16 conv2d/batchnorm/conv and residual 
+    '''
+    expansion = 1 
+    def __init__(self, in_channels, out_channels, *args, **kwargs):
+        super().__init__(in_channels, out_channels, *args, **kwargs)
+        self.blocks = nn.Sequential(
+            conv_bn(self.in_channels,self.out_channels,
+                conv=conv1x9,bias =False,stride=self.downsampling),
+            activation_func(self.activation),
+            conv_bn(self.out_channels,self.expanded_channels,
+                conv=conv1x9,bias =False)
+        )
+
+class EEGResNetEncoder(ResNetEncoder):
+    def __init__(self,in_channels=1, block_sizes=[64,128,256,512],deepths=[2,2,2,2],
+        activation='elu',block=EEGResNetBasicBlock,*args,**kwargs):
+        super().__init__()
+        self.blocks_sizes = block_sizes
+        self.gate = nn.Sequential(
+            nn.Conv2d(in_channels,self.blocks_sizes[0],
+                    kernel_size=(1,25),stride=1,padding=0,bias=False),
+            nn.BatchNorm2d(self.blocks_sizes[0]),
+            activation_func(activation),
+            nn.MaxPool2d(kernel_size=(1,8),stride=(1,4),padding=(0,0))
+        )
+        self.in_out_block_sizes = list(zip(block_sizes,block_sizes[1:]))
+        self.blocks = nn.ModuleList([
+            ResNetLayer(block_sizes[0],block_sizes[0],n=deepths[0],
+                activation=activation,block=block,*args,**kwargs),
+            *[ResNetLayer(in_channels*block.expansion,
+                out_channels,n=n,activation=activation,
+                block=block,*args,**kwargs)
+                for (in_channels,out_channels),n in zip(self.in_out_block_sizes,deepths[1:])]
+        ])
     def forward(self,x):
         x = x.view(-1,1,22,1000)
-        x = self.conv1(x)
-        #(x.shape)
-        x = self.Relu(x)
-        #x = self.conv2(x)
-        #x = self.Relu(x)
-        #print(x.shape)
-        x = torch.square(x)
-        x = self.maxpool1(x)
-        x = torch.log(x)
-        #
-        x = self.resudual_block1(x)
-        x = self.resudual_block2(x)
-        x = self.resudual_block3(x)
-        x = self.resudual_block4(x)
-        
-        
-        #print(x.shape)
-        #6 
-        x = x.permute(0,3,2,1)
-        x = x.reshape(-1,96,64*22)
-        #print(x.shape)
-        x = self.fc1(x)
-        #x = torch.square(x)
-        x = x.permute(0,2,1)
-        #x = torch.log(x)
-        x = x.reshape(-1,96*32)
-        x = self.fc2(x)
+        x = self.gate(x)
+        for block in self.blocks:
+            x = block(x)
+        return x 
+
+class EEGResNetV2(nn.Module):
+    def __init__(self,in_channels, classes,*args, **kwargs):
+        super().__init__()
+        ## Unpack kwargs 
+        self.encoder = EEGResNetEncoder(in_channels, *args, **kwargs) 
+        #self.decoder = ResNetDecoder(self.encoder.blocks[-1].blocks[-1].expanded_channels,classes)
+        self.decoder = ResNetDecoder(1512,classes)
+        self.softmax = nn.Softmax(dim=1)
+
+    def forward(self,x):
+        x = self.encoder(x)
+        x = self.decoder(x)
         x = self.softmax(x)
         return x 
-        
- 
+
 class EEGResNet(nn.Module):
     def __init__(self,in_channels, classes):
         super().__init__()
@@ -277,8 +277,8 @@ class EEGResNet(nn.Module):
         * input(B,64,22,94)                   
         * output (B,64,22,94)
         """
-        self.resudual_block1 = ResNetBasicBlock(in_channels=32,out_channels=64,activation='none')
-        self.resudual_block2 = ResNetBasicBlock(in_channels=64,out_channels=64,activation='none')
+        self.resudual_block1 = ResNetBasicBlock(in_channels=32,out_channels=64,activation='relu')
+        self.resudual_block2 = ResNetBasicBlock(in_channels=64,out_channels=64,activation='relu')
         """
         6. Fullconnect (in:1408, out:32)
         * input(B,64,22,94)
@@ -312,8 +312,6 @@ class EEGResNet(nn.Module):
         #
         x = self.resudual_block1(x)
         x = self.resudual_block2(x)
-        x = self.resudual_block2(x)
-        x = self.resudual_block2(x)
         
         
         #print(x.shape)
@@ -330,37 +328,4 @@ class EEGResNet(nn.Module):
         x = self.softmax(x)
         return x 
     
-    """
-    def forward(self,x):
-        x = x.view(-1,1,22,1000)
-        x = self.conv1(x)
-        #(x.shape)
-        x = self.Relu(x)
-        #x = self.conv2(x)
-        #x = self.Relu(x)
-        #print(x.shape)
-        x = self.maxpool1(x)
-        #
-        x = self.resudual_block1(x)
-        x = self.resudual_block2(x)
-        x = self.resudual_block2(x)
-        x = self.resudual_block2(x)
-        
-        
-        #print(x.shape)
-        #6 
-        x = x.permute(0,3,2,1)
-        x = x.reshape(-1,96,64*22)
-        #print(x.shape)
-        x = self.fc1(x)
-        x = torch.square(x)
-        x = x.permute(0,2,1)
-
-        x = torch.log(x)
-        x = x.reshape(-1,96*32)
-        x = self.fc2(x)
-        x = self.softmax(x)
-        return x 
-    """
-
 
