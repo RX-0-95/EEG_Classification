@@ -112,3 +112,17 @@
 2. Adjust maxpool1d size 
 3. Adjust y axis 
 
+
+
+### Reslut:
+1. first layer:  Average pool is better than maxpool 
+2. second layer: 
+
+
+* Winner: square avg log 
+
+* One fc net 
+1. maxpool: 52 
+2. avgpool: 
+
+* Two fc net 

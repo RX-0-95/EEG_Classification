@@ -1,7 +1,7 @@
 from os import scandir
 import numpy as np
 import torch
-#from torch._C import MobileOptimizerType, TreeView, device 
+
 import torch.nn as nn
 from torch.types import Device 
 from torch.utils.data import Dataset, DataLoader,TensorDataset, random_split 
@@ -24,6 +24,8 @@ def activation_func(activation):
         ['elu',nn.ELU(inplace=False)],
         ['none', nn.Identity()]
     ])[activation]
+
+
 
 class EEGDataset(Dataset):
     """EEG dataset."""
@@ -124,15 +126,16 @@ def eeg_train_val_loader(_data_dir, _label_dir,**kwargs):
     label_dir = _label_dir  
 
     #Unpack keyword argument 
-    split_ratio= kwargs.pop('split_ratio',0.8)
-    train_batch_size = kwargs.pop('train_batch_size',32)
-    val_batch_size = kwargs.pop('val_batch_size',8)
-    device = get_device(kwargs.pop('device',None)) 
-    transform = kwargs.pop('transform',None)
+    _kwargs = kwargs.copy() 
+    split_ratio= _kwargs.pop('split_ratio',0.8)
+    train_batch_size = _kwargs.pop('train_batch_size',32)
+    val_batch_size = _kwargs.pop('val_batch_size',8)
+    device = get_device(_kwargs.pop('device',None)) 
+    transform = _kwargs.pop('transform',None)
     
     # Throw an error if extra keyword 
-    if len(kwargs) >0:
-        extra = ', '.join('"%s"' % k for k in list(kwargs.keys()))
+    if len(_kwargs) >0:
+        extra = ', '.join('"%s"' % k for k in list(_kwargs.keys()))
         raise ValueError('Unrecognized arguments %s' % extra)
 
     eeg_data = np.load(data_dir)
@@ -164,6 +167,27 @@ def eeg_train_val_loader(_data_dir, _label_dir,**kwargs):
     }
     return dataloaders 
 
+class OverfitDetector():
+    def __init__(self,threshold=0.65,patience=20,verbose =True):
+        super().__init__()
+        self.threshold = 0.65
+        self.patience = 20 
+        self.counter = 0 
+        self.verbose = verbose
+        self.overfit = False 
+    def step(self,train_acc,val_acc):
+        if train_acc*0.65>val_acc:
+            self.counter+=1 
+        if self.counter>self.patience:
+            self.counter = 0 
+            self.overfit = True
+            if self.verbose:
+                print('Overfit is detected!!!')
+        else:
+            self.overfit = False 
+
+    
+
 def train(model,options,criterion,
     data_dir,label_dir,
     device=None,preload_gpu=False,
@@ -180,22 +204,24 @@ def train(model,options,criterion,
 
     model.train() 
     train_device = get_device(device)
-    
+    _options = options.copy() 
     # Unpack options 
-    _train_val_split_ratio = options.pop('train_val_split_ratio',0.8)
-    _train_batch_size = options.pop('train_batch_size',32)
-    _val_batch_size = options.pop('val_batch_size',8)
-    _learning_rate = options.pop('learning_rate',1e-4)
-    _weight_decay = options.pop('weight_decay',0)
-    _scheduler_factor = options.pop('scheduler_factor',0.8)
-    _scheduler_patience = options.pop('scheduler_patience',50)
-    _transform = options.pop('transform',None)
+    _train_val_split_ratio = _options.pop('train_val_split_ratio',0.8)
+    _train_batch_size = _options.pop('train_batch_size',32)
+    _val_batch_size = _options.pop('val_batch_size',8)
+    _learning_rate = _options.pop('learning_rate',1e-4)
+    _weight_decay = _options.pop('weight_decay',0)
+    _scheduler_factor = _options.pop('scheduler_factor',0.8)
+    _scheduler_patience = _options.pop('scheduler_patience',50)
+    _transform = _options.pop('transform',None)
+    _overfit_threshold = _options.pop('overfit_threshold',0.65)
+    _overfit_patience = _options.pop('overfit_patience',20)
+    epoch_num = _options.pop('epoch_num',250)
 
-    epoch_num = options.pop('epoch_num',250)
 
     # Check if there is unexpected options 
-    if len(options) >0:
-        extra = ', '.join('"%s"' % k for k in list(options.keys()))
+    if len(_options) >0:
+        extra = ', '.join('"%s"' % k for k in list(_options.keys()))
         raise ValueError('Unrecognized arguments in options%s' % extra)
 
     data_loaders = eeg_train_val_loader(
@@ -223,7 +249,7 @@ def train(model,options,criterion,
         verbose=True,
         threshold=1e-2 
         )
-
+    overfit_detector = OverfitDetector(_overfit_threshold,_overfit_patience)
     print('Start training...')
     print('Epoch\tTrain Loss\tTrain Acc\tTest Loss\tTest_Acc\t')
     
@@ -271,14 +297,14 @@ def train(model,options,criterion,
         avg_epoch_metric = sum(epoch_metric)/len(epoch_metric)
         avg_val_loss, avg_val_metric = test_net(model,val_loader,
                                                 criterion,train_device)
-        scheduler.step(avg_val_metric) 
-
+      
   
         ## log the result 
         logs['train_loss'].append(avg_epoch_loss) 
         logs['train_acc'].append(avg_epoch_metric)
         logs['val_loss'].append(avg_val_loss)
         logs['val_acc'].append(avg_val_metric)
+   
 
         ## Print result 
         if verbose:
@@ -289,6 +315,11 @@ def train(model,options,criterion,
                 avg_val_loss, 
                 avg_val_metric
                 ))
+        scheduler.step(avg_val_metric) 
+        overfit_detector.step(avg_epoch_metric,avg_val_metric) 
+        if overfit_detector.overfit:
+            print('Detect Model overfit, stop training....')
+            break; 
 
     if plot_graph:
         plot_logs(logs)        
