@@ -32,22 +32,24 @@ class EEGCNN_solver():
         self.over_fit_patience = 15
         self.log = {
             'param':[],
-            'val_acc':[]
+            'val_acc':[],
+            'train_acc':[],
         }
     
     def write_log(self,filename ='param.txt'):
             f = open(filename,'w')
-            for param, acc in zip(self.log['param'],self.log['val_acc']):
-                f.write(str(param)+':'+str(acc)+'\n')
+            for param, val_acc, train_acc in zip(self.log['param'],self.log['val_acc'],self.log['train_acc']):
+                f.write(str(param)+':'+str(val_acc)+':'+str(train_acc)+'\n')
             f.close()
 
     def solve_param(self):
         my_dict = self.model_encoder_opt
         allNames = self.model_encoder_opt
         combinations = it.product(*(my_dict[Name] for Name in allNames))
-        #print(list(combinations))
+        combinations_list = list(combinations)
+  
         val_max = 0.0 
-        for params in combinations.reverse():
+        for params in reversed(combinations_list): 
             torch.cuda.empty_cache()
             e_opt = {
                 'gate_conv_size':params[0],
@@ -69,8 +71,10 @@ class EEGCNN_solver():
                 label_dir=self.label_dir,
                 preload_gpu=True)
             cur_val = np.max(logs['val_acc'])
+            cur_train = np.max(logs['train_acc'])
             self.log['param'].append(params)
             self.log['val_acc'].append(cur_val)
+            self.log['train_acc'].append(cur_train)
             if cur_val> val_max:
                 val_max = cur_val
 

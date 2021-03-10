@@ -1,16 +1,21 @@
 from os import scandir
+import os 
+from typing import Sequence
 import numpy as np
 import torch
 
 import torch.nn as nn
 from torch.types import Device 
-from torch.utils.data import Dataset, DataLoader,TensorDataset, random_split 
+from torch.utils.data import Dataset, DataLoader,TensorDataset, random_split
+from torch.utils.data.dataset import Subset 
 from torchvision import transforms, utils 
 import torch.optim as optim 
 import time 
+from itertools import accumulate
 from livelossplot import PlotLosses 
 import matplotlib.pyplot as plt 
 from eeg_net.utils import *
+from eeg_net.data_process import * 
 '''
 Process Data 
 TODO: Fourier transfer magnitude and phase  
@@ -34,6 +39,7 @@ class EEGDataset(Dataset):
         self.subset = subset 
     
     def __getitem__(self, index):
+ 
         x, y = self.subset[index]
         if self.transform:
             if self.transform == 'shift_positive':
@@ -41,8 +47,12 @@ class EEGDataset(Dataset):
             elif self.transform =='square':
                 x = self.square(x)
             elif self.transform =='fft':
-                x = self.fft(x)
-           
+                print(x.shape)
+                for i,data in enumerate(x):
+                    print(data.shape)
+                    x[i] = butter_bandpass_filter(data,3,25,250) 
+            elif self.transform =='none':
+                pass 
         return x, y
         
     def __len__(self):
@@ -102,7 +112,53 @@ class ShallowConv(nn.Module):
         self.device = _device 
         return _device 
 
-def eeg_train_val_loader(_data_dir, _label_dir,**kwargs):
+
+class ShallowConv2(nn.Module):
+    '''
+    ShallowConv: 
+    ShallowConv is given by TA as the baseline of this project 
+    '''
+    def __init__(self,in_channels, classes,device=None,*args,**kwargs):
+        super().__init__()
+        # Unpack the kwargs 
+        _activation = kwargs.pop('activation','none')
+        self.device = self.set_device(device) 
+        self.activation = activation_func(_activation)
+        self.conv1 = nn.Conv2d(in_channels, 40,(1,25),stride=1)
+        self.fc1 = nn.Linear(880,40)
+        self.avgpool = nn.AvgPool1d(75, stride=15)
+        self.fc2 = nn.Linear(40*27,classes)
+        self.softmax= nn.Softmax(dim=1) 
+
+    def forward(self,x):
+        x = x.view(-1,1,22,500)
+        x = self.conv1(x)
+        #x = self.activation(x)
+        x = x.permute(0,3,1,2)
+        #print(x.shape)
+        x = x.view(-1,476,880)
+        x = self.fc1(x)
+        x = self.activation(x)
+        x = torch.square(x)
+        x = x.permute(0,2,1)
+        x = self.avgpool(x)
+        x = torch.log(x)
+        #print(x.shape)
+        x = x.reshape(-1,40*27)
+        x = self.fc2(x)
+        x = self.softmax(x) 
+        return x 
+
+    def set_device(self,device=None):
+        if device == None:
+            _device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            _device = torch.device(device)
+        self.device = _device 
+        return _device 
+
+
+def eeg_train_val_loader(_data_dir, _label_dir,*args, **kwargs):
     """ 
     Load the data, splilt the train set and validation set 
     All Data will be load to "device". Suit for project have small 
@@ -132,7 +188,7 @@ def eeg_train_val_loader(_data_dir, _label_dir,**kwargs):
     val_batch_size = _kwargs.pop('val_batch_size',8)
     device = get_device(_kwargs.pop('device',None)) 
     transform = _kwargs.pop('transform',None)
-    
+    downsample_split = _kwargs.pop('downsample_split',False)
     # Throw an error if extra keyword 
     if len(_kwargs) >0:
         extra = ', '.join('"%s"' % k for k in list(_kwargs.keys()))
@@ -150,10 +206,13 @@ def eeg_train_val_loader(_data_dir, _label_dir,**kwargs):
     init_dataset = TensorDataset(eeg_data,eeg_label)
     train_length =  int(len(init_dataset)*split_ratio)
     lengths = [train_length,int(len(init_dataset)-train_length)] 
-    subset_train, subset_val = random_split(init_dataset, lengths) 
-
+    if downsample_split == False: 
+        subset_train, subset_val = random_split(init_dataset, lengths) 
+    else:
+        subset_train, subset_val = downsample_random_split(init_dataset, lengths) 
+        
     train_data = EEGDataset(
-    subset_train, transform=transform)
+        subset_train, transform=transform)
 
     val_data = EEGDataset(
         subset_val, transform=transform)
@@ -166,6 +225,52 @@ def eeg_train_val_loader(_data_dir, _label_dir,**kwargs):
             val_data, batch_size=val_batch_size, shuffle=False, num_workers=0)
     }
     return dataloaders 
+
+def downsample_random_split(dataset, lengths):
+    if sum(lengths) != len(dataset):  # type: ignore
+        raise ValueError("Sum of input lengths does not equal the length of the input dataset!")
+    rng = np.random.default_rng() 
+    indices1 = np.arange(int(sum(lengths)/2))
+    #indices1 = rng.integers(low=0,high=(sum(lengths)/2))
+    np.random.shuffle(indices1)
+    indices1 = indices1*2
+    indices2 = indices1+1
+    c_indices = npcross_combine(indices1,indices2).tolist() 
+    return [Subset(dataset, c_indices[offset - length : offset]) for offset, length in zip(accumulate(lengths), lengths)]
+
+def npcross_combine(arr1,arr2):
+    len = arr1.shape[0] + arr2.shape[0]
+    rtarr = np.zeros((len,)) 
+    for i in np.arange(arr1.shape[0]):
+        
+        rtarr[2*i]=arr1[i]
+        rtarr[2*i+1] =arr2[i]
+    return rtarr.astype(int)
+
+def eeg_test_loader(_data_dir,_label_dir,downsample_r=None,*args,**kwargs):
+    #Unpack keyword argument 
+    _kwargs = kwargs.copy() 
+    device = get_device(_kwargs.pop('device',None)) 
+    transform = _kwargs.pop('transform',None)
+    
+    # Throw an error if extra keyword 
+    if len(_kwargs) >0:
+        extra = ', '.join('"%s"' % k for k in list(_kwargs.keys()))
+        raise ValueError('Unrecognized arguments %s' % extra)
+    eeg_data = np.load(_data_dir)
+    eeg_label = np.load(_label_dir)
+    eeg_label -= 769 
+    eeg_label = torch.from_numpy(eeg_label).float().long().to(device)
+    eeg_data = torch.from_numpy(eeg_data).float().to(device)
+    eeg_dataset = TensorDataset(eeg_data,eeg_label)
+    test_data = EEGDataset(
+        eeg_dataset,transform=transform
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_data, batch_size=1,shuffle = False, num_workers = 0 
+    )
+    return test_loader 
+
 
 class OverfitDetector():
     def __init__(self,threshold=0.65,patience=20,verbose =True):
@@ -186,12 +291,10 @@ class OverfitDetector():
         else:
             self.overfit = False 
 
-    
-
 def train(model,options,criterion,
     data_dir,label_dir,
     device=None,preload_gpu=False,
-    verbose=True,plot_graph=True):
+    verbose=True,plot_graph=True,l2_reg =False):
     
 
     # log record loss 
@@ -210,13 +313,20 @@ def train(model,options,criterion,
     _train_batch_size = _options.pop('train_batch_size',32)
     _val_batch_size = _options.pop('val_batch_size',8)
     _learning_rate = _options.pop('learning_rate',1e-4)
-    _weight_decay = _options.pop('weight_decay',0)
+    _weight_decay = _options.pop('weight_decay',0.001)
     _scheduler_factor = _options.pop('scheduler_factor',0.8)
     _scheduler_patience = _options.pop('scheduler_patience',50)
     _transform = _options.pop('transform',None)
     _overfit_threshold = _options.pop('overfit_threshold',0.65)
     _overfit_patience = _options.pop('overfit_patience',20)
+    _downsample_split = _options.pop('downsample_split',False)
+    _save_flag = _options.pop('save_flag',False)
+    _min_save_epoch = _options.pop('min_save_epoch',50)
+    _model_dir = _options.pop('model_dir','model')
+    _model_name= _options.pop('model_name','model.pth')
     epoch_num = _options.pop('epoch_num',250)
+
+
 
 
     # Check if there is unexpected options 
@@ -230,7 +340,8 @@ def train(model,options,criterion,
         split_ratio = _train_val_split_ratio,
         train_batch_size =_train_batch_size,
         val_batch_size = _val_batch_size,
-        transform = _transform) 
+        transform = _transform,
+        downsample_split = _downsample_split) 
 
     train_loader = data_loaders['train']
     val_loader = data_loaders['val']
@@ -252,7 +363,7 @@ def train(model,options,criterion,
     overfit_detector = OverfitDetector(_overfit_threshold,_overfit_patience)
     print('Start training...')
     print('Epoch\tTrain Loss\tTrain Acc\tTest Loss\tTest_Acc\t')
-    
+    best_metric = 0.0 
     for i in np.arange(epoch_num):
         epoch_loss = [] 
         epoch_metric = [] 
@@ -262,6 +373,7 @@ def train(model,options,criterion,
         for data in train_loader:
             #copy all tensor to GPU, donothing if the alread in GPU 
             x, y = data 
+           
             if not preload_gpu:
                 x = x.to(train_device)
                 y = y.to(train_device,dtype =torch.long)
@@ -272,7 +384,9 @@ def train(model,options,criterion,
 
             #Forward pass 
             y_hat = model(x)
+      
             loss = criterion(y_hat,y)
+         
             
             loss.backward() 
             # Update the weights 
@@ -291,21 +405,28 @@ def train(model,options,criterion,
                         iter_ct,
                         loss
                     ))
-
+        
 
         avg_epoch_loss = sum(epoch_loss)/len(epoch_loss)
         avg_epoch_metric = sum(epoch_metric)/len(epoch_metric)
         avg_val_loss, avg_val_metric = test_net(model,val_loader,
                                                 criterion,train_device)
       
-  
+        
         ## log the result 
         logs['train_loss'].append(avg_epoch_loss) 
         logs['train_acc'].append(avg_epoch_metric)
         logs['val_loss'].append(avg_val_loss)
         logs['val_acc'].append(avg_val_metric)
-   
-
+        #update best metric and save the model 
+        if avg_val_metric >= best_metric:
+            best_metric = avg_val_metric 
+            if _save_flag and i>_min_save_epoch:
+                torch.save(
+                    model.state_dict(),
+                    os.path.join(_model_dir,_model_name)
+                )
+                print('Saving model...')
         ## Print result 
         if verbose:
             print('%d\t%4.6f\t%4.6f\t%4.6f\t%4.6f\t' % (
@@ -342,11 +463,19 @@ def test_net(model,test_loader,criterion,device):
             x,y = data
             x = x.to(device)
             y = y.to(device)
-
+            
             #Forward pass 
             y_hat = model(x)
+            #print(y)
+            #print(y_hat)
             loss = criterion(y_hat,y)
-         
+            #print(loss)
+            #print(loss)
+            #for param in model.parameters():
+            #    print(param.data)
+            #    break
+            #loss_detached = loss.detach() 
+            #print(loss.shape)
             test_loss.append(loss.data.item())
             yhat_detacted = y_hat.detach()
             y_detacted = y.detach()  

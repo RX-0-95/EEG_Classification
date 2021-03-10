@@ -26,12 +26,15 @@ class Conv2dAuto(nn.Conv2d):
         super().__init__(*args, **kwargs)
         self.padding = (self.kernel_size[0]//2, self.kernel_size[1]//2)
 
+class Conv1dAuto(nn.Conv1d):
+    def __init__(self,*args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.padding = (self.kernel_size[0]//2)
+
 class Conv2dNopad(nn.Conv2d):
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs)
 
-class AvgPoolAuto(nn.AvgPool2d):
-    pass 
 
 conv3x3 = partial(Conv2dAuto,kernel_size=3, bias=False)
 conv1x17 = partial(Conv2dAuto,kernel_size=(1,17),bias = False)
@@ -174,14 +177,16 @@ class ResNetDecoder(nn.Module):
     def __init__(self, in_features, n_classes):
         super().__init__()
         #self.avg = nn.AdaptiveAvgPool2d((1,1))
-        self.avgpool = nn.AvgPool2d((1,6),stride=4)
-        self.maxpool = nn.MaxPool2d((1,6),stride=4)
+        self.avgpool = nn.AvgPool2d((1,2),stride=2)
+        self.maxpool = nn.MaxPool2d((1,2),stride=2)
         #self.maxpool = nn.MaxPool2d((1,6),stride=4)
         self.decoder = nn.Linear(in_features, n_classes)
+        self.dropout = nn.Dropout(0.8)
     def forward(self,x):
-        x = self.avgpool(x)
-        #x = self.maxpool(x)
+        #x = self.avgpool(x)
+        x = self.maxpool(x)
         x = x.view(x.size(0),-1)
+        x = self.dropout(x)
         #print(x.shape)
         x = self.decoder(x)
     
