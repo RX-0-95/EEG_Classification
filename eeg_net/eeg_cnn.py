@@ -247,6 +247,7 @@ class EEGCNNv3Encoder(nn.Module):
     def forward(self,x):
         x =  x.view(-1,self.in_size[1],1,self.in_size[2])
         x = self.blocks(x)
+        #rint(x.shape)
         x = torch.flatten(x,start_dim=1)
         return x 
 
@@ -263,6 +264,7 @@ class EEGCNNv3Decoder(nn.Module):
         _linear1_out = options.pop('linear1_out',80)
         _activation = options.pop('activation','relu')  
         _drop_rate = options.pop('drop_rate',0.7)   
+        _avg_pool_size = options.pop('avg_pool_size',1)   
         if len(options) >0:
             extra = ', '.join('"%s"' % k for k in list(options.keys()))
             raise ValueError('Unrecognized arguments in options%s' % extra) 
@@ -272,10 +274,14 @@ class EEGCNNv3Decoder(nn.Module):
         self.activation = activation_func(_activation)
         self.softmax = nn.Softmax(dim=1)
         self.drop = nn.Dropout(p=_drop_rate)
+        self.avgpool = nn.AvgPool1d(kernel_size=_avg_pool_size)
     def forward(self,x):
         x = self.linear1(x)
-        #x = self.batchnorm(x)
         x = self.activation(x) 
+        #x = torch.square(x)
+        #x = self.avgpool(x)
+        #x = torch.log(x)
+        #x = self.batchnorm(x)
         x = self.drop(x)
         x = self.linear2(x)
         return x 
