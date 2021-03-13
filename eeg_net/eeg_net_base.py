@@ -86,7 +86,7 @@ class ShallowConv(nn.Module):
         self.avgpool = nn.AvgPool1d(75, stride=15)
         self.fc2 = nn.Linear(2440,classes)
         self.softmax= nn.Softmax(dim=1) 
-
+        self.drop = nn.Dropout(0.6)
     def forward(self,x):
         x = x.view(-1,1,22,1000)
         x = self.conv1(x)
@@ -100,6 +100,7 @@ class ShallowConv(nn.Module):
         x = self.avgpool(x)
         x = torch.log(x)
         x = x.reshape(-1,40*61)
+        x =self.drop(x)
         x = self.fc2(x)
         x = self.softmax(x) 
         return x 
@@ -156,6 +157,7 @@ class ShallowConv2(nn.Module):
             _device = torch.device(device)
         self.device = _device 
         return _device 
+
 
 
 def eeg_train_val_loader(_data_dir, _label_dir,*args, **kwargs):

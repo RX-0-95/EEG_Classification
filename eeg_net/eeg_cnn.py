@@ -1,4 +1,5 @@
 
+from numpy.lib.arraypad import pad
 from eeg_net.eeg_resnet import Conv1dAuto, Conv2dAuto
 from os import scandir
 import numpy as np
@@ -24,45 +25,59 @@ class EEGCNN(nn.Module):
     def __init__(self,in_channels=1, classes=4, *args, **kwargs):
         super().__init__()
         ## Unpack **kwargs 
-        _activation = kwargs.pop('activation','none')
+        _activation = kwargs.pop('activation','leaky_relu')
         self.conv1 = nn.Conv2d(in_channels=in_channels, 
-            out_channels=25, kernel_size=(1,25))
+            out_channels=64, kernel_size=(1,7),padding=(0,3))
+        self.batchnorm1 = nn.BatchNorm2d(64)
+        self.maxpool1 = nn.MaxPool2d(kernel_size=(1,2),stride=(1,2)) 
         self.act1 = activation_func(_activation)
-        self.conv2 =  nn.Conv2d(in_channels=25,out_channels=25,
-            kernel_size=(5,1),stride=(3,1))
-        self.batchnorm1 = nn.BatchNorm2d(25)
-        self.maxpool1 = nn.MaxPool2d(kernel_size=(1,3),stride=(1,3)) 
-
-        self.conv3 = nn.Conv2d(in_channels=25,out_channels=50,
-            kernel_size=(1,25))
-        self.act2 = activation_func(_activation)
+        self.conv2 =  nn.Conv2d(in_channels=64,out_channels=128,
+            kernel_size=(1,7),stride=(1,1),padding=(0,3))
+        self.batchnorm2 = nn.BatchNorm2d(128)
+        self.maxpool2 = nn.MaxPool2d(kernel_size=(1,2),stride=(1,2)) 
         
-        self.conv4 = nn.Conv2d(in_channels=50,out_channels=70,
-            kernel_size=(3,15),stride=(3,1))
-        self.act3 = activation_func(_activation)
-        self.conv5 = nn.Conv2d(in_channels=70,out_channels=70,
-            kernel_size=(2,1))
-        self.conv6 = nn.Conv2d(in_channels=70, out_channels=150,
-            kernel_size=(1,15))
-        self.linear = nn.Linear(in_features=70*31, out_features=classes)
+        #self.conv3 = nn.Conv2d(in_channels=44,out_channels=22,
+        #    kernel_size=(1,25))
+        self.act2 = activation_func(_activation)
+        self.fc1 = nn.Linear(128*22,60)
+        self.fc2 = nn.Linear(60*60,4)
+        self.drop = nn.Dropout(0.5)
+        self.avgpool = nn.AvgPool1d(7,stride=2)
         self.softmax = nn.Softmax(dim=1)
     def forward(self,x):
-        x = x.view(-1,1,22,1000)
+        x = x.view(-1,1,22,500)
         x = self.conv1(x)
-        x = self.act1(x)
-        x = self.conv2(x)
         x = self.batchnorm1(x)
+        x = self.act1(x)
         x = self.maxpool1(x)
-        x = self.conv3(x)
-        x = self.act2(x)
-        x = self.conv4(x)
-        x = self.act3(x)
+        x = self.conv2(x)
+        x = self.batchnorm2(x)
+        x = self.act1(x)
         x = self.maxpool1(x)
-        x = self.conv5(x)
-        x = self.maxpool1(x)
-        x = x.reshape(-1,70*31)
-        x = self.linear(x)
+       
+        x = x.permute(0,3,1,2)
+        
+        x = x.view(-1,125,128*22)
+        x = self.fc1(x)
+        
+        x= self.act1(x)
+        
+        x = torch.square(x)
+        x = x.permute(0,2,1)
+        
+        x = self.avgpool(x)
+     
+        x = torch.log(x)
+ 
+        x = x.reshape(-1,60*60)
+        x = self.drop(x)
+        x= self.fc2(x)
         x = self.softmax(x)
+       
+        #x = x.reshape(-1,40*61)
+        #x = x.reshape(-1,70*31)
+        #x = self.linear(x)
+        #x = self.softmax(x)
         #x = self.conv6(x)
         #x = self.maxpool1(x)
         #x = x.reshape(-1,150*5)
