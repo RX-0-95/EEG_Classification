@@ -82,5 +82,6 @@ class EEGCNN_solver():
             self.write_log()
         return self.log
             
-    
+
+  
   

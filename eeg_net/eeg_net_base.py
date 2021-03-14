@@ -2,10 +2,12 @@ from os import scandir
 import os 
 from typing import Sequence
 import numpy as np
+from tensorflow.python.ops.gen_array_ops import parallel_concat
 import torch
 
 import torch.nn as nn
-from torch.types import Device 
+from torch.types import Device
+from torch.utils import data 
 from torch.utils.data import Dataset, DataLoader,TensorDataset, random_split
 from torch.utils.data.dataset import Subset 
 from torchvision import transforms, utils 
@@ -20,6 +22,21 @@ from eeg_net.data_process import *
 Process Data 
 TODO: Fourier transfer magnitude and phase  
 '''
+
+
+class Conv2dAuto(nn.Conv2d):
+    def __init__(self,*args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.padding = (self.kernel_size[0]//2, self.kernel_size[1]//2)
+
+class Conv1dAuto(nn.Conv1d):
+    def __init__(self,*args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.padding = (self.kernel_size[0]//2)
+
+class Conv2dNopad(nn.Conv2d):
+    def __init__(self,*args,**kwargs):
+        super().__init__(*args,**kwargs)
 
 def activation_func(activation):
     return nn.ModuleDict([
@@ -130,7 +147,7 @@ class ShallowConv2(nn.Module):
         self.avgpool = nn.AvgPool1d(75, stride=15)
         self.fc2 = nn.Linear(40*27,classes)
         self.softmax= nn.Softmax(dim=1) 
-
+        self.drop = nn.Dropout(0.2)
     def forward(self,x):
         x = x.view(-1,1,22,500)
         x = self.conv1(x)
@@ -146,6 +163,63 @@ class ShallowConv2(nn.Module):
         x = torch.log(x)
         #print(x.shape)
         x = x.reshape(-1,40*27)
+        #x = self.drop(x)
+        x = self.fc2(x)
+        x = self.softmax(x) 
+        return x 
+
+    def set_device(self,device=None):
+        if device == None:
+            _device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            _device = torch.device(device)
+        self.device = _device 
+        return _device 
+"""
+class ShallowConvEncoder(nn.Module):
+    def __init__(self,in_channels,*args,**kwargs):
+        super().__init__()
+        _activation = kwargs.pop('activation','none')
+"""     
+
+class DsShallowConv(nn.Module):
+    '''
+    
+    '''
+    def __init__(self,in_channels, classes,device=None,*args,**kwargs):
+        super().__init__()
+        # Unpack the kwargs 
+        _activation = kwargs.pop('activation','none')
+        self.device = self.set_device(device) 
+        self.activation = activation_func(_activation)
+        #self.conv1 = nn.Conv2d(in_channels, 40,(1,13),stride=1)
+        #self.conv1 = Conv2dAuto(in_channels,40,(1,13),stride=1)
+        self.conv1 = Conv2dAuto(in_channels=in_channels,
+                                out_channels = 40,
+                                kernel_size=(1,13),
+                                stride = 1)
+        
+        self.fc1 = nn.Linear(880,40)
+        self.avgpool = nn.AvgPool1d(75, stride=15)
+        self.fc2 = nn.Linear(40*29,classes)
+        self.softmax= nn.Softmax(dim=1) 
+        self.drop = nn.Dropout(0.15)
+    def forward(self,x):
+        x = x.view(-1,1,22,500)
+        x = self.conv1(x)
+        #x = self.activation(x)
+        x = x.permute(0,3,1,2)
+        #print(x.shape)
+        x = x.view(-1,500,880)
+        x = self.fc1(x)
+        x = self.activation(x)
+        x = torch.square(x)
+        x = x.permute(0,2,1)
+        x = self.avgpool(x)
+        x = torch.log(x)
+        #print(x.shape)
+        x = x.reshape(-1,40*29)
+        #x = self.drop(x)
         x = self.fc2(x)
         x = self.softmax(x) 
         return x 
@@ -158,7 +232,68 @@ class ShallowConv2(nn.Module):
         self.device = _device 
         return _device 
 
+class DSPShallowConv(nn.Module):
+    '''
+    
+    '''
+    def __init__(self,in_channels=1, classes=4,input_size=(1,22,500),
+                    device=None,option={},*args,**kwargs):
+        super().__init__()
+        # Unpack the kwargs 
+        _activation = option.pop('activation','none')
+        _conv_size = option.pop('conv_size',[3,7,15,25])
+        _conv_out_channel = option.pop('conv_out_channel',[20,20,20,20]) 
+        _avg_pool_size = option.pop('avg_pool_size',75)
+        _avg_pool_stride = option.pop('avg_stride_pool',15)
+        self.fc1_out_channel = option.pop('fc1_out_channel',40)
+        _,self.C,self.L = input_size
+        #self.device = self.set_device(device) 
+        self.activation = activation_func(_activation)                  
+        self.parallel_conv_blocks = nn.ModuleList([
+                Conv2dAuto(in_channels=in_channels,
+                    out_channels = out_channels,
+                    kernel_size = (1,kernel_size),
+                    stride = 1
+                    )for (out_channels,kernel_size) in zip(_conv_out_channel,_conv_size)
+            ])
+        
+        self.fc_in_feature = sum(_conv_out_channel)*self.C
+        self.avg_pool_out_size =((self.L-_avg_pool_size)//_avg_pool_stride)+1
+        self.fc1 = nn.Linear(self.fc_in_feature,self.fc1_out_channel)
+        self.avgpool = nn.AvgPool1d(_avg_pool_size, stride=_avg_pool_stride)
+        self.fc2 = nn.Linear(self.fc1_out_channel*self.avg_pool_out_size,classes)
+        self.softmax= nn.Softmax(dim=1) 
+        self.drop = nn.Dropout(0.1)
+    def forward(self,x):
+        x = x.view(-1,1,self.C,self.L)
+        parallel_out = torch.tensor(()).to(self.device)
+        for block in self.parallel_conv_blocks:
+            parallel_out = torch.cat((block(x),parallel_out),dim=1)
+        x = parallel_out.permute(0,3,1,2)
+        x = x.view(-1,self.L,self.fc_in_feature)
+        x = self.fc1(x)
+        x = self.activation(x)
+        x = torch.square(x)
+        x = x.permute(0,2,1)
+        x = self.avgpool(x)
+        x = torch.log(x)
+        x = x.reshape(-1,self.fc1_out_channel*self.avg_pool_out_size)
+        #x = self.drop(x)
+        x = self.fc2(x)
+        x = self.softmax(x)
+        return x 
 
+    def set_device(self,device=None):
+        if device == None:
+            _device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            _device = torch.device(device)
+        self.device = _device 
+        return _device 
+
+    @property 
+    def device(self):
+        return next(self.parameters()).device
 
 def eeg_train_val_loader(_data_dir, _label_dir,*args, **kwargs):
     """ 
@@ -273,7 +408,6 @@ def eeg_test_loader(_data_dir,_label_dir,downsample_r=None,*args,**kwargs):
     )
     return test_loader 
 
-
 class OverfitDetector():
     def __init__(self,threshold=0.65,patience=20,verbose =True):
         super().__init__()
@@ -297,8 +431,6 @@ def train(model,options,criterion,
     data_dir,label_dir,
     device=None,preload_gpu=False,
     verbose=True,plot_graph=True,l2_reg =False):
-    
-
     # log record loss 
     logs = {
         'train_loss': [],
@@ -327,9 +459,6 @@ def train(model,options,criterion,
     _model_dir = _options.pop('model_dir','model')
     _model_name= _options.pop('model_name','model.pth')
     epoch_num = _options.pop('epoch_num',250)
-
-
-
 
     # Check if there is unexpected options 
     if len(_options) >0:
@@ -386,10 +515,7 @@ def train(model,options,criterion,
 
             #Forward pass 
             y_hat = model(x)
-      
             loss = criterion(y_hat,y)
-         
-            
             loss.backward() 
             # Update the weights 
             optimizer.step() 
@@ -405,16 +531,13 @@ def train(model,options,criterion,
                 if iter_ct%50 ==50-1:
                     print('--Iter %d\t%4.6f' %(
                         iter_ct,
-                        loss
-                    ))
-        
+                        loss))
 
         avg_epoch_loss = sum(epoch_loss)/len(epoch_loss)
         avg_epoch_metric = sum(epoch_metric)/len(epoch_metric)
         avg_val_loss, avg_val_metric = test_net(model,val_loader,
                                                 criterion,train_device)
-      
-        
+              
         ## log the result 
         logs['train_loss'].append(avg_epoch_loss) 
         logs['train_acc'].append(avg_epoch_metric)
@@ -502,3 +625,24 @@ def plot_logs(logs):
     ax2.set_ylabel('acc')
     fig.legend() 
     plt.show() 
+
+def avg_test_acc(model, data_dir,loss_fn,train_opt={},model_opt={},trails = 10):
+    X_train = data_dir['X_train_dir']
+    y_train = data_dir['y_train_dir']
+    X_test = data_dir['X_test_dir']
+    y_test = data_dir['y_test_dir']
+    test_acc = []
+    for i in np.arange(trails):
+        model_net  = model(options = model_opt).to('cuda')
+        train(model_net,train_opt,loss_fn,
+                data_dir=X_train,
+                label_dir=y_train,
+                preload_gpu= True)
+        test_loader = eeg_test_loader(X_test,y_test)
+        avg_loss, acc = test_net(model_net,test_loader,loss_fn,'cuda')
+        print('Test accuracy in trail {}: {}'.format(i,acc))
+        test_acc.append(acc)
+        del model_net
+    return test_acc     
+
+    

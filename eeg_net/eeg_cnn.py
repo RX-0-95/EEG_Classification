@@ -40,24 +40,24 @@ class EEGCNN(nn.Module):
         #    kernel_size=(1,25))
         self.act2 = activation_func(_activation)
         self.fc1 = nn.Linear(128*22,60)
-        self.fc2 = nn.Linear(60*60,4)
+        self.fc2 = nn.Linear(60*67,4)
         self.drop = nn.Dropout(0.5)
-        self.avgpool = nn.AvgPool1d(7,stride=2)
+        self.avgpool = nn.AvgPool1d(35,stride=7)
         self.softmax = nn.Softmax(dim=1)
     def forward(self,x):
         x = x.view(-1,1,22,500)
         x = self.conv1(x)
         x = self.batchnorm1(x)
         x = self.act1(x)
-        x = self.maxpool1(x)
+        #x = self.maxpool1(x)
         x = self.conv2(x)
         x = self.batchnorm2(x)
         x = self.act1(x)
-        x = self.maxpool1(x)
-       
-        x = x.permute(0,3,1,2)
+        #x = self.maxpool1(x)
         
-        x = x.view(-1,125,128*22)
+        x = x.permute(0,3,1,2)
+       
+        x = x.view(-1,500,128*22)
         x = self.fc1(x)
         
         x= self.act1(x)
@@ -66,23 +66,14 @@ class EEGCNN(nn.Module):
         x = x.permute(0,2,1)
         
         x = self.avgpool(x)
-     
+        
         x = torch.log(x)
  
-        x = x.reshape(-1,60*60)
+        x = x.reshape(-1,60*67)
         x = self.drop(x)
         x= self.fc2(x)
         x = self.softmax(x)
-       
-        #x = x.reshape(-1,40*61)
-        #x = x.reshape(-1,70*31)
-        #x = self.linear(x)
-        #x = self.softmax(x)
-        #x = self.conv6(x)
-        #x = self.maxpool1(x)
-        #x = x.reshape(-1,150*5)
-        #x = self.linear(x)
-        #x = self.softmax(x)
+        
         return x         
 
 
@@ -219,7 +210,7 @@ class EEGCNNv2(nn.Module):
 
 
 class EEGCNNv3Encoder(nn.Module):
-    def __init__(self,in_channels,input_size=(1,22,1000),options={},*args,**kwargs):
+    def __init__(self,in_channels=22,input_size=(1,22,1000),options={},*args,**kwargs):
         super().__init__()
         self.in_size = input_size
         ## Unpack varaibles 
@@ -300,10 +291,7 @@ class EEGCNNv3Decoder(nn.Module):
         x = self.drop(x)
         x = self.linear2(x)
         return x 
-
-
-
-class EEGCNNv3(nn.Module):
+class EEG1D3LCNN(nn.Module):
 
     def __init__(self, in_channels=1, classes=4,input_size=(1,22,1000),encoder_opt={},
         decoder_opt={},*args, **kwargs):
@@ -321,3 +309,53 @@ class EEGCNNv3(nn.Module):
         x = self.decoder(x)
         return x 
 
+
+class EEGCNNv4(nn.Module):
+    def __init__(self,in_channels=1, classes=4, *args, **kwargs):
+        super().__init__()
+        ## Unpack **kwargs 
+        _activation = kwargs.pop('activation','leaky_relu')
+        _conv_out_channel = kwargs.pop('conv_out_channel',64)
+        _spat_conv_out_channel = kwargs.pop('spat_conv_out_channel',32)
+        self.conv1 = conv_bn(conv=Conv2dAuto,in_channels=in_channels,
+                                out_channels = _conv_out_channel, kernel_size=(1,65)) 
+        self.conv2 = conv_bn(conv=Conv2dAuto,in_channels=in_channels,
+                                out_channels = _conv_out_channel, kernel_size=(1,41)) 
+        self.conv3 = conv_bn(conv=Conv2dAuto,in_channels=in_channels,
+                                out_channels = _conv_out_channel, kernel_size=(1,27)) 
+        self.conv4 = conv_bn(conv=Conv2dAuto,in_channels=in_channels,
+                                out_channels = _conv_out_channel, kernel_size=(1,17)) 
+        self.spatconv = conv_bn(conv=nn.Conv2d,in_channels=4*_conv_out_channel,
+                                out_channels=_spat_conv_out_channel,
+                                kernel_size=(22,1))
+
+        
+        self.maxpool2 = nn.MaxPool2d(kernel_size=(1,2),stride=(1,2)) 
+        
+        #self.conv3 = nn.Conv2d(in_channels=44,out_channels=22,
+        #    kernel_size=(1,25))
+        self.act2 = activation_func(_activation)
+        self.fc1 = nn.Linear(62*_spat_conv_out_channel,4)
+        self.drop = nn.Dropout(0.2)
+        self.avgpool = nn.AvgPool2d((1,75),stride=(1,15))
+        self.softmax = nn.Softmax(dim=1)
+    def forward(self,x):
+        x = x.view(-1,1,22,1000)
+        #print(x.shape)
+        #x = x.permute(0,2,1,3)
+        #print(x.shape)
+        c1 = self.conv1(x)
+        c2 = self.conv2(x)
+        c3 = self.conv3(x)
+        c4 = self.conv1(x)
+        x = torch.cat((c1,c2,c3,c4),1)
+        #print(x.shape)
+        x = self.spatconv(x)
+        x = torch.square(x)
+        x = self.avgpool(x)
+        x = torch.log(x)
+        x = torch.flatten(x,start_dim=1)
+        x = self.drop(x)
+        x = self.fc1(x)
+        x = self.softmax(x)
+        return x    
