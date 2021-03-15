@@ -180,7 +180,7 @@ class EEGCNNv2Decoder(nn.Module):
         x = self.linear2(x)
         x = self.softmax(x) 
         return x 
-class EEGCNNv2(nn.Module):
+class TSCNN(nn.Module):
     """
     EEGCNNV2: 
     1. Conv1d along the time space of the signal, generate feature map of time interval 
@@ -191,9 +191,11 @@ class EEGCNNv2(nn.Module):
     6. fc along the prob feature space 
     7. fc along time space 
     """
-    def __init__(self, in_channels=1, classes=4,input_size=(1,22,1000),encoder_opt={},
-        decoder_opt={},*args, **kwargs):
+    def __init__(self, in_channels=1, classes=4,input_size=(1,22,1000),options={},*args, **kwargs):
         super().__init__()
+
+        decoder_opt=options['decoder_opt']
+        encoder_opt=options['encoder_opt']
         self.input_size = input_size
         ## Unpack **kwargs 
         self.encoder = EEGCNNv2Encoder(in_channels=in_channels,
@@ -293,9 +295,11 @@ class EEGCNNv3Decoder(nn.Module):
         return x 
 class EEG1D3LCNN(nn.Module):
 
-    def __init__(self, in_channels=1, classes=4,input_size=(1,22,1000),encoder_opt={},
-        decoder_opt={},*args, **kwargs):
+    def __init__(self, in_channels=22, classes=4,input_size=(1,22,1000),options={},*args, **kwargs):
         super().__init__()
+        decoder_opt=options['decoder_opt']
+        encoder_opt=options['encoder_opt']
+
         self.input_size = input_size
         ## Unpack **kwargs 
         self.encoder = EEGCNNv3Encoder(in_channels=in_channels,
@@ -309,6 +313,72 @@ class EEG1D3LCNN(nn.Module):
         x = self.decoder(x)
         return x 
 
+class PSCNN(nn.Module):
+    '''
+    
+    '''
+    def __init__(self,in_channels=1, classes=4,input_size=(1,22,500),
+                    device=None,option={},*args,**kwargs):
+        super().__init__()
+        # Unpack the kwargs 
+        _activation = option.pop('activation','none')
+        _conv_size = option.pop('conv_size',[3,7,15,25])
+        _conv_out_channel = option.pop('conv_out_channel',[20,20,20,20]) 
+        _avg_pool_size = option.pop('avg_pool_size',75)
+        _avg_pool_stride = option.pop('avg_stride_pool',15)
+        _dropout_rate = option.pop('dropout_rate',0.0)
+        self.fc1_out_channel = option.pop('fc1_out_channel',40)
+        _,self.C,self.L = input_size
+        #self.device = self.set_device(device) 
+        self.activation = activation_func(_activation)                  
+        self.parallel_conv_blocks = nn.ModuleList([
+                Conv2dAuto(in_channels=in_channels,
+                    out_channels = out_channels,
+                    kernel_size = (1,kernel_size),
+                    stride = 1
+                    )for (out_channels,kernel_size) in zip(_conv_out_channel,_conv_size)
+            ])
+        
+        self.fc_in_feature = sum(_conv_out_channel)*self.C
+        self.avg_pool_out_size =((self.L-_avg_pool_size)//_avg_pool_stride)+1
+        self.fc1 = nn.Linear(self.fc_in_feature,self.fc1_out_channel)
+        self.avgpool = nn.AvgPool1d(_avg_pool_size, stride=_avg_pool_stride)
+        self.fc2 = nn.Linear(self.fc1_out_channel*self.avg_pool_out_size,classes)
+        self.softmax= nn.Softmax(dim=1) 
+        self.drop = nn.Dropout(_dropout_rate)
+    def forward(self,x):
+        x = x.view(-1,1,self.C,self.L)
+        parallel_out = torch.tensor(()).to(self.device)
+        for block in self.parallel_conv_blocks:
+            parallel_out = torch.cat((block(x),parallel_out),dim=1)
+        x = parallel_out.permute(0,3,1,2)
+        x = x.view(-1,self.L,self.fc_in_feature)
+        x = self.fc1(x)
+        x = self.activation(x)
+        x = torch.square(x)
+        x = x.permute(0,2,1)
+        x = self.avgpool(x)
+        x = torch.log(x)
+        x = x.reshape(-1,self.fc1_out_channel*self.avg_pool_out_size)
+        x = self.drop(x)
+        x = self.fc2(x)
+        x = self.softmax(x)
+        return x 
+
+    def set_device(self,device=None):
+        if device == None:
+            _device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            _device = torch.device(device)
+        self.device = _device 
+        return _device 
+
+    @property 
+    def device(self):
+        return next(self.parameters()).device
+
+
+
 
 class EEGCNNv4(nn.Module):
     def __init__(self,in_channels=1, classes=4, *args, **kwargs):
@@ -316,7 +386,7 @@ class EEGCNNv4(nn.Module):
         ## Unpack **kwargs 
         _activation = kwargs.pop('activation','leaky_relu')
         _conv_out_channel = kwargs.pop('conv_out_channel',64)
-        _spat_conv_out_channel = kwargs.pop('spat_conv_out_channel',32)
+        _spat_conv_out_channel = kwargs.pop('spat_conv_out_channel',1)
         self.conv1 = conv_bn(conv=Conv2dAuto,in_channels=in_channels,
                                 out_channels = _conv_out_channel, kernel_size=(1,65)) 
         self.conv2 = conv_bn(conv=Conv2dAuto,in_channels=in_channels,
@@ -325,7 +395,7 @@ class EEGCNNv4(nn.Module):
                                 out_channels = _conv_out_channel, kernel_size=(1,27)) 
         self.conv4 = conv_bn(conv=Conv2dAuto,in_channels=in_channels,
                                 out_channels = _conv_out_channel, kernel_size=(1,17)) 
-        self.spatconv = conv_bn(conv=nn.Conv2d,in_channels=4*_conv_out_channel,
+        self.spatconv = conv_bn(conv=nn.Conv2d,in_channels=3*_conv_out_channel,
                                 out_channels=_spat_conv_out_channel,
                                 kernel_size=(22,1))
 
@@ -337,25 +407,33 @@ class EEGCNNv4(nn.Module):
         self.act2 = activation_func(_activation)
         self.fc1 = nn.Linear(62*_spat_conv_out_channel,4)
         self.drop = nn.Dropout(0.2)
-        self.avgpool = nn.AvgPool2d((1,75),stride=(1,15))
+        self.avgpool = nn.AvgPool2d((1,25),stride=(1,3))
+        
         self.softmax = nn.Softmax(dim=1)
     def forward(self,x):
-        x = x.view(-1,1,22,1000)
+        x = x.view(-1,1,22,500)
         #print(x.shape)
         #x = x.permute(0,2,1,3)
         #print(x.shape)
         c1 = self.conv1(x)
+        c1 = self.maxpool2(c1)
         c2 = self.conv2(x)
+        c2 = self.maxpool2(c2)
         c3 = self.conv3(x)
-        c4 = self.conv1(x)
-        x = torch.cat((c1,c2,c3,c4),1)
+        c3 = self.maxpool2(c3)
+
+        x = torch.cat((c1,c2,c3),1)
         #print(x.shape)
+       
         x = self.spatconv(x)
+        
         x = torch.square(x)
         x = self.avgpool(x)
         x = torch.log(x)
-        x = torch.flatten(x,start_dim=1)
+        #x = torch.flatten(x,start_dim=1)
+        """
         x = self.drop(x)
         x = self.fc1(x)
         x = self.softmax(x)
+        """
         return x    

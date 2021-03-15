@@ -232,68 +232,6 @@ class DsShallowConv(nn.Module):
         self.device = _device 
         return _device 
 
-class DSPShallowConv(nn.Module):
-    '''
-    
-    '''
-    def __init__(self,in_channels=1, classes=4,input_size=(1,22,500),
-                    device=None,option={},*args,**kwargs):
-        super().__init__()
-        # Unpack the kwargs 
-        _activation = option.pop('activation','none')
-        _conv_size = option.pop('conv_size',[3,7,15,25])
-        _conv_out_channel = option.pop('conv_out_channel',[20,20,20,20]) 
-        _avg_pool_size = option.pop('avg_pool_size',75)
-        _avg_pool_stride = option.pop('avg_stride_pool',15)
-        self.fc1_out_channel = option.pop('fc1_out_channel',40)
-        _,self.C,self.L = input_size
-        #self.device = self.set_device(device) 
-        self.activation = activation_func(_activation)                  
-        self.parallel_conv_blocks = nn.ModuleList([
-                Conv2dAuto(in_channels=in_channels,
-                    out_channels = out_channels,
-                    kernel_size = (1,kernel_size),
-                    stride = 1
-                    )for (out_channels,kernel_size) in zip(_conv_out_channel,_conv_size)
-            ])
-        
-        self.fc_in_feature = sum(_conv_out_channel)*self.C
-        self.avg_pool_out_size =((self.L-_avg_pool_size)//_avg_pool_stride)+1
-        self.fc1 = nn.Linear(self.fc_in_feature,self.fc1_out_channel)
-        self.avgpool = nn.AvgPool1d(_avg_pool_size, stride=_avg_pool_stride)
-        self.fc2 = nn.Linear(self.fc1_out_channel*self.avg_pool_out_size,classes)
-        self.softmax= nn.Softmax(dim=1) 
-        self.drop = nn.Dropout(0.1)
-    def forward(self,x):
-        x = x.view(-1,1,self.C,self.L)
-        parallel_out = torch.tensor(()).to(self.device)
-        for block in self.parallel_conv_blocks:
-            parallel_out = torch.cat((block(x),parallel_out),dim=1)
-        x = parallel_out.permute(0,3,1,2)
-        x = x.view(-1,self.L,self.fc_in_feature)
-        x = self.fc1(x)
-        x = self.activation(x)
-        x = torch.square(x)
-        x = x.permute(0,2,1)
-        x = self.avgpool(x)
-        x = torch.log(x)
-        x = x.reshape(-1,self.fc1_out_channel*self.avg_pool_out_size)
-        #x = self.drop(x)
-        x = self.fc2(x)
-        x = self.softmax(x)
-        return x 
-
-    def set_device(self,device=None):
-        if device == None:
-            _device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        else:
-            _device = torch.device(device)
-        self.device = _device 
-        return _device 
-
-    @property 
-    def device(self):
-        return next(self.parameters()).device
 
 def eeg_train_val_loader(_data_dir, _label_dir,*args, **kwargs):
     """ 
@@ -330,9 +268,14 @@ def eeg_train_val_loader(_data_dir, _label_dir,*args, **kwargs):
     if len(_kwargs) >0:
         extra = ', '.join('"%s"' % k for k in list(_kwargs.keys()))
         raise ValueError('Unrecognized arguments %s' % extra)
-
-    eeg_data = np.load(data_dir)
-    eeg_label = np.load(label_dir)
+    ## Check if the pass in parameter is director to the data, or data it self
+    if isinstance(data_dir,str):
+        eeg_data = np.load(data_dir)
+        eeg_label = np.load(label_dir)
+    else:
+        eeg_data = data_dir
+        eeg_label = label_dir
+    
     #Reform the label to 0,1,2,3
     eeg_label -= 769 
     assert eeg_label.shape[0]==eeg_data.shape[0], \
@@ -363,6 +306,35 @@ def eeg_train_val_loader(_data_dir, _label_dir,*args, **kwargs):
     }
     return dataloaders 
 
+def eeg_test_loader(_data_dir,_label_dir,downsample_r=None,*args,**kwargs):
+    #Unpack keyword argument 
+    _kwargs = kwargs.copy() 
+    device = get_device(_kwargs.pop('device',None)) 
+    transform = _kwargs.pop('transform',None)
+    
+    # Throw an error if extra keyword 
+    if len(_kwargs) >0:
+        extra = ', '.join('"%s"' % k for k in list(_kwargs.keys()))
+        raise ValueError('Unrecognized arguments %s' % extra)
+  
+    if isinstance(_data_dir,str):
+        eeg_data = np.load(_data_dir)
+        eeg_label = np.load(_label_dir)
+    else:
+        eeg_data = _data_dir
+        eeg_label = _label_dir
+    eeg_label -= 769 
+    eeg_label = torch.from_numpy(eeg_label).float().long().to(device)
+    eeg_data = torch.from_numpy(eeg_data).float().to(device)
+    eeg_dataset = TensorDataset(eeg_data,eeg_label)
+    test_data = EEGDataset(
+        eeg_dataset,transform=transform
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_data, batch_size=1,shuffle = False, num_workers = 0 
+    )
+    return test_loader 
+
 def downsample_random_split(dataset, lengths):
     if sum(lengths) != len(dataset):  # type: ignore
         raise ValueError("Sum of input lengths does not equal the length of the input dataset!")
@@ -384,40 +356,17 @@ def npcross_combine(arr1,arr2):
         rtarr[2*i+1] =arr2[i]
     return rtarr.astype(int)
 
-def eeg_test_loader(_data_dir,_label_dir,downsample_r=None,*args,**kwargs):
-    #Unpack keyword argument 
-    _kwargs = kwargs.copy() 
-    device = get_device(_kwargs.pop('device',None)) 
-    transform = _kwargs.pop('transform',None)
-    
-    # Throw an error if extra keyword 
-    if len(_kwargs) >0:
-        extra = ', '.join('"%s"' % k for k in list(_kwargs.keys()))
-        raise ValueError('Unrecognized arguments %s' % extra)
-    eeg_data = np.load(_data_dir)
-    eeg_label = np.load(_label_dir)
-    eeg_label -= 769 
-    eeg_label = torch.from_numpy(eeg_label).float().long().to(device)
-    eeg_data = torch.from_numpy(eeg_data).float().to(device)
-    eeg_dataset = TensorDataset(eeg_data,eeg_label)
-    test_data = EEGDataset(
-        eeg_dataset,transform=transform
-    )
-    test_loader = torch.utils.data.DataLoader(
-        test_data, batch_size=1,shuffle = False, num_workers = 0 
-    )
-    return test_loader 
 
 class OverfitDetector():
     def __init__(self,threshold=0.65,patience=20,verbose =True):
         super().__init__()
-        self.threshold = 0.65
-        self.patience = 20 
+        self.threshold = threshold
+        self.patience = patience
         self.counter = 0 
         self.verbose = verbose
         self.overfit = False 
     def step(self,train_acc,val_acc):
-        if train_acc*0.65>val_acc:
+        if train_acc*self.threshold>val_acc:
             self.counter+=1 
         if self.counter>self.patience:
             self.counter = 0 
@@ -611,6 +560,29 @@ def test_net(model,test_loader,criterion,device):
     avg_metric = sum(test_metrics) / len(test_metrics)
     return avg_loss, avg_metric
 
+def net_pred(model,test_loader,criterion,device):
+    model.eval() 
+    pred_list = []
+    with torch.no_grad():
+        for data in test_loader:
+            x,y = data
+            x = x.to(device)
+            y = y.to(device)
+            
+            #Forward pass 
+            y_hat = model(x)
+            #print(y)
+            #print(y_hat)
+            loss = criterion(y_hat,y)
+            
+            yhat_detacted = y_hat.detach()
+            _,pred = yhat_detacted.max(1)
+            #y_hat_data = y_hat.data.cpu().numpy()
+            pred_list.append(pred.data.item())
+    model.train() #set back to train mode 
+    
+    return pred_list
+
 def plot_logs(logs):
     fig,(ax1,ax2) = plt.subplots(1,2) 
     ax1.plot(logs['train_loss'],label='Train')
@@ -626,14 +598,16 @@ def plot_logs(logs):
     fig.legend() 
     plt.show() 
 
-def avg_test_acc(model, data_dir,loss_fn,train_opt={},model_opt={},trails = 10):
-    X_train = data_dir['X_train_dir']
-    y_train = data_dir['y_train_dir']
-    X_test = data_dir['X_test_dir']
-    y_test = data_dir['y_test_dir']
+def avg_test_acc(model,input_size, data_dir,loss_fn,train_opt={},model_opt={},trails = 10):
+
     test_acc = []
     for i in np.arange(trails):
-        model_net  = model(options = model_opt).to('cuda')
+        X_train = data_dir['X_train_dir'].copy()
+        y_train = data_dir['y_train_dir'].copy()
+        X_test = data_dir['X_test_dir'].copy()
+        y_test = data_dir['y_test_dir'].copy()
+        model_net  = model(input_size = input_size,options = model_opt).to('cuda')
+        #model_net  = model().to('cuda')
         train(model_net,train_opt,loss_fn,
                 data_dir=X_train,
                 label_dir=y_train,
@@ -642,7 +616,8 @@ def avg_test_acc(model, data_dir,loss_fn,train_opt={},model_opt={},trails = 10):
         avg_loss, acc = test_net(model_net,test_loader,loss_fn,'cuda')
         print('Test accuracy in trail {}: {}'.format(i,acc))
         test_acc.append(acc)
+        torch.cuda.empty_cache()
         del model_net
-    return test_acc     
+    return test_acc, sum(test_acc)/len(test_acc)    
 
     
