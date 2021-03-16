@@ -273,8 +273,8 @@ def eeg_train_val_loader(_data_dir, _label_dir,*args, **kwargs):
         eeg_data = np.load(data_dir)
         eeg_label = np.load(label_dir)
     else:
-        eeg_data = data_dir
-        eeg_label = label_dir
+        eeg_data = data_dir.copy()
+        eeg_label = label_dir.copy()
     
     #Reform the label to 0,1,2,3
     eeg_label -= 769 
@@ -321,8 +321,8 @@ def eeg_test_loader(_data_dir,_label_dir,downsample_r=None,*args,**kwargs):
         eeg_data = np.load(_data_dir)
         eeg_label = np.load(_label_dir)
     else:
-        eeg_data = _data_dir
-        eeg_label = _label_dir
+        eeg_data = _data_dir.copy()
+        eeg_label = _label_dir.copy()
     eeg_label -= 769 
     eeg_label = torch.from_numpy(eeg_label).float().long().to(device)
     eeg_data = torch.from_numpy(eeg_data).float().to(device)
@@ -452,7 +452,7 @@ def train(model,options,criterion,
         
         for data in train_loader:
             #copy all tensor to GPU, donothing if the alread in GPU 
-            x, y = data 
+            x, y = data
            
             if not preload_gpu:
                 x = x.to(train_device)
@@ -472,6 +472,7 @@ def train(model,options,criterion,
             yhat_detacted = y_hat.detach()
             #print(type(yhat_detacted))
             y_detacted = y.detach()  
+            
             #y_pred = torch.argmax(yhat_detacted,dim=1)
             epoch_metric.append(get_pred_acc(yhat_detacted,y_detacted))
             iter_ct +=1 
